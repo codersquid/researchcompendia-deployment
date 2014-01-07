@@ -1,4 +1,4 @@
 rc-web-deploy
 =============
 
-deployment materials for researchcompendia website
+school zone speed deployment materials for the researchcompendia site

@@ -1,0 +1,15 @@
+*.py[cod]
+
+*.swp
+*~
+
+.vagrant
+
+# admin settings
+env
+
+# Installer logs
+pip-log.txt
+
+#pycharm
+.idea

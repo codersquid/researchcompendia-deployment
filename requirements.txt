@@ -1,0 +1,3 @@
+fabric
+git+git://github.com/ronnix/fabtools.git
+jinja2

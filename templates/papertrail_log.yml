@@ -1,0 +1,5 @@
+files: 
+  - /home/tyler/site/logs/*.log
+destination:
+  host: {{ papertrail_host }}
+  port: {{ papertrail_port }}
