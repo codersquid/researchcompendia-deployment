@@ -1,9 +1,8 @@
 import string, random
 from os.path import join
-from fabric.api import task, env, cd, sudo, local, run
+from fabric.api import task, env, cd, sudo, local
 from fabric.contrib.files import sed, upload_template
-from fabric.operations import put
-from fabtools import require, service, supervisor
+from fabtools import require, supervisor
 import fabtools
 
 env.disable_known_hosts = True
@@ -35,6 +34,8 @@ def setup():
 
     setup_supervisor()
 
+    setup_rabbitmq()
+
     ## collectd
     # install, files, restart
     #setup_collectd()
@@ -54,6 +55,15 @@ def setup():
     # restart supervisor
 
 
+def setup_rabbitmq():
+    secret = randomstring(64)
+    sudo('rabbitmqctl delete_user guest')
+    sudo('rabbitmqctl add_user tyler "%s"' % secret)
+    sudo('rabbitmqctl set_permissions -p / tyler ".*" ".*" ".*"')
+    upload_template('templates/DJANGO_BROKER_URL', '/home/tyler/site/env/DJANGO_BROKER_URL',
+            use_jinja=True, context={'password': secret}, use_sudo=True)
+    sudo('chown tyler:tyler /home/tyler/site/env/DJANGO_BROKER_URL')
+
 def setup_nginx():
     upload_template('templates/researchcompendia_nginx', '/etc/nginx/sites-available/researchcompendia', use_sudo=True)
     # figure out how to do the status conf
@@ -61,6 +71,7 @@ def setup_nginx():
 
 def setup_supervisor():
     upload_template('templates/researchcompendia_web.conf', '/etc/supervisor/conf.d/researchcompendia_web.conf', use_sudo=True)
+    upload_template('templates/celeryd.conf', '/etc/supervisor/conf.d/celeryd.conf', use_sudo=True)
     supervisor.update_config()
 
 def lockdowns():
@@ -110,6 +121,8 @@ def setup_user():
         su('mkdir logs bin env bin/runnerenv', SITE_USER)
         # add site files
         su('cp /vagrant/templates/runserver.sh bin/', SITE_USER)
+        su('cp /vagrant/templates/celeryworker.sh bin/', SITE_USER)
+        su('cp /vagrant/templates/check_downloads.sh bin/', SITE_USER)
         su('cp /vagrant/SITE_VERSION bin/runnerenv/', SITE_USER)
         su('cp %s env/' % join('/vagrant/env', SITE_ENVIRONMENT, '*'), SITE_USER)
         su('git clone %s tyler' % SITE_REPO, SITE_USER)
@@ -175,3 +188,5 @@ def install_python_packages():
     ], use_sudo=True)
 
 
+def randomstring(n):
+    return ''.join(random.choice(string.ascii_letters + string.digits + '~@#%^&*-_') for x in range(n))
