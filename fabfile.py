@@ -1,39 +1,55 @@
-import string, random
-from os.path import join
-from fabric.api import task, env, cd, sudo, local
+import datetime, string, random
+from os.path import join, dirname, abspath
+from fabric.api import run, task, env, cd, sudo, local, put
 from fabric.contrib.files import sed, upload_template
-from fabtools import require, supervisor
+from fabtools import require, supervisor, postgres, deb
+from fabtools.user import home_directory
 import fabtools
 
 env.disable_known_hosts = True
-env.user = 'vagrant'
-env.hosts = ['127.0.0.1:2222']
-result = local('vagrant ssh-config | grep IdentityFile | cut -f4 -d " "', capture=True)
-env.key_filename = result
+env.hosts = [
+    #'researchcompendia.org',
+    #'labs.researchcompendia.org',
+    # my remote dev box
+    '67.207.156.211',
+    #'vagrant@127.0.0.1:2222',
+]
+
+#env.user = 'vagrant'
+#result = local('vagrant ssh-config | grep IdentityFile | cut -f4 -d " "', capture=True)
+#env.key_filename = result
 
 SITE_USER = 'tyler'
+SITE_NAME = 'tyler'
 SITE_REPO = 'git://github.com/researchcompendia/researchcompendia.git'
-SITE_VERSION = local('cat SITE_VERSION', capture=True)
-SITE_ENVIRONMENT = 'vagrant'
+SITE_ENVIRONMENT = 'dev'
+FAB_HOME = dirname(abspath(__file__))
 
 
 @task
-def setup():
+def deploy(version_tag=None):
+    supervisor.stop_process(SITE_NAME)
+    new_env = virtualenv_name(commit=version_tag)
+    mkvirtualenv(new_env)
+    update_site_version(new_env)
+    update_repo(commit=version_tag)
+    install_site_requirements(new_env)
+    collectstatic()
+    supervisor.start_process(SITE_NAME)
 
+
+@task
+def setup(version_tag=None):
     install_dependencies()
-
     lockdowns()
-
     setup_database()
 
+@task
+def contsetup(version_tag=None):
     setup_user()
-
-    setup_site()
- 
+    setup_django(version_tag)
     setup_nginx()
-
     setup_supervisor()
-
     setup_rabbitmq()
 
     ## collectd
@@ -55,24 +71,35 @@ def setup():
     # restart supervisor
 
 
-def setup_rabbitmq():
+
+
+def setup_rabbitmq(user=None):
+    if user is None:
+        user = SITE_USER
     secret = randomstring(64)
     sudo('rabbitmqctl delete_user guest')
-    sudo('rabbitmqctl add_user tyler "%s"' % secret)
-    sudo('rabbitmqctl set_permissions -p / tyler ".*" ".*" ".*"')
-    upload_template('templates/DJANGO_BROKER_URL', '/home/tyler/site/env/DJANGO_BROKER_URL',
-            use_jinja=True, context={'password': secret}, use_sudo=True)
-    sudo('chown tyler:tyler /home/tyler/site/env/DJANGO_BROKER_URL')
+    sudo('rabbitmqctl add_user %s "%s"' % (user, secret))
+    sudo('rabbitmqctl set_permissions -p / %s ".*" ".*" ".*"' % user)
+    template_file = template_path('DJANGO_BROKER_URL')
+    destination_file = join(home_directory(user), 'site', 'env', 'DJANGO_BROKER_URL')
+    upload_template(template_file, destination_file, use_jinja=True, context={'password': secret}, use_sudo=True)
+    sudo('chown %s:%s %s' % (user, user, destination_file))
+
 
 def setup_nginx():
-    upload_template('templates/researchcompendia_nginx', '/etc/nginx/sites-available/researchcompendia', use_sudo=True)
+    upload_template(template_path('researchcompendia_nginx'),
+        '/etc/nginx/sites-available/researchcompendia', use_sudo=True)
     # figure out how to do the status conf
     require.nginx.enabled('researchcompendia')
 
+
 def setup_supervisor():
-    upload_template('templates/researchcompendia_web.conf', '/etc/supervisor/conf.d/researchcompendia_web.conf', use_sudo=True)
-    upload_template('templates/celeryd.conf', '/etc/supervisor/conf.d/celeryd.conf', use_sudo=True)
+    upload_template(template_path('researchcompendia_web.conf'),
+        '/etc/supervisor/conf.d/researchcompendia_web.conf', use_sudo=True)
+    upload_template(template_path('celeryd.conf'),
+        '/etc/supervisor/conf.d/celeryd.conf', use_sudo=True)
     supervisor.update_config()
+
 
 def lockdowns():
     # don't share nginx version in header and error pages
@@ -80,52 +107,69 @@ def lockdowns():
     # require keyfile authentication
     sed('/etc/ssh/sshd_config', '^#PasswordAuthentication yes', 'PasswordAuthentication no', use_sudo=True)
 
-def su(cmd, user):
-    sudo("su %s -c '%s'" % (user, cmd))
 
-def vsu(cmd, workon=None, user=None):
-    if workon is None:
-        workon = SITE_VERSION
-    if user is None:
-        user = SITE_USER
-    sudo("su %s -c 'source ~/.bash_aliases; workon %s; %s'" % (user, workon, cmd))
+def setup_django(version_tag):
+    virtualenv = virtualenv_name(commit=version_tag)
+    mkvirtualenv(virtualenv)
+    update_site_version(virtualenv)
+    install_site_requirements(virtualenv)
+    collectstatic()
+    migrate_and_load_database()
 
 
-def setup_site():
-    su('source ~/.bash_aliases; mkvirtualenv %s' % SITE_VERSION, user=SITE_USER)
-    home = fabtools.user.home_directory(SITE_USER)
-    envdir = join(home, 'site', 'env')
-    djangodir = join(home, 'site', 'tyler', 'companionpages')
-    with cd(join(home, 'site', 'tyler')):
-        vsu('pip install -r requirements/production.txt')
+def migrate_and_load_database():
+    envdir = join(home_directory(SITE_USER), 'site', 'env')
+    djangodir = join(home_directory(SITE_USER), 'site', SITE_NAME, 'companionpages')
     with cd(djangodir):
-        vsu('envdir %s ./manage.py syncdb --noinput --migrate' % envdir)
-        vsu('envdir %s ./manage.py loaddata fixtures/sites.json' % envdir)
-        vsu('envdir %s ./manage.py loaddata fixtures/home.json' % envdir)
+        su('envdir %s ./manage.py syncdb --noinput --migrate' % envdir)
+        vsu('envdir %s ./manage.py loaddata fixtures/*' % envdir)
+
+
+def install_site_requirements(virtualenv):
+    home = home_directory(SITE_USER)
+    with cd(join(home, 'site', SITE_NAME)):
+        vsu('pip install -r requirements/production.txt', virtualenv=virtualenv)
 
 
 def setup_database():
     require.postgres.server()
-    su('createuser -S -D -R -w %s' % SITE_USER, 'postgres')
-    su('createdb -w -O %s %s' % (SITE_USER, SITE_USER), 'postgres')
+    # NOTE: fabtools.require.postgres.user did not allow me to create a user with no pw
+    if not postgres.user_exists(SITE_USER):
+        su('createuser -S -D -R -w %s' % SITE_USER, 'postgres')
+    if not postgres.database_exists(SITE_USER):
+        su('createdb -w -O %s %s' % (SITE_USER, SITE_USER), 'postgres')
+
+
+
+
+
 
 
 def setup_user():
-    sudo('useradd -s/bin/bash -d/home/%s -m %s' % (SITE_USER, SITE_USER))
-    home = fabtools.user.home_directory(SITE_USER)
-    with cd(home):
-        su('mkdir venvs site', SITE_USER)
-        su('cp /vagrant/templates/_bash_aliases .bash_aliases', SITE_USER)
-    with cd(join(home, 'site')):
+    if not fabtools.user.exists(SITE_USER):
+        sudo('useradd -s/bin/bash -d/home/%s -m %s' % (SITE_USER, SITE_USER))
+        bash_aliases = join(home_directory(SITE_USER), '.bash_aliases')
+        put(template_path('_bash_aliases'), bash_aliases, use_sudo=True)
+        sudo('chown %s:%s %s' % (SITE_USER, SITE_USER, bash_aliases))
+
+    site_root = join(home_directory(SITE_USER), 'site')
+    bindir = join(site_root, 'bin')
+    envdir = join(site_root, 'env')
+    localenvdir = join(FAB_HOME, 'env', SITE_ENVIRONMENT, '*')
+
+    with cd(home_directory(SITE_USER)):
+        su('mkdir -p venvs site')
+
+    with cd(site_root):
         # make directories
-        su('mkdir logs bin env bin/runnerenv', SITE_USER)
+        su('mkdir -p logs bin env bin/runnerenv')
         # add site files
-        su('cp /vagrant/templates/runserver.sh bin/', SITE_USER)
-        su('cp /vagrant/templates/celeryworker.sh bin/', SITE_USER)
-        su('cp /vagrant/templates/check_downloads.sh bin/', SITE_USER)
-        su('cp /vagrant/SITE_VERSION bin/runnerenv/', SITE_USER)
-        su('cp %s env/' % join('/vagrant/env', SITE_ENVIRONMENT, '*'), SITE_USER)
-        su('git clone %s tyler' % SITE_REPO, SITE_USER)
+        put(template_path('runserver.sh'), bindir, use_sudo=True)
+        put(template_path('celeryworker.sh'), bindir, use_sudo=True)
+        put(template_path('check_downloads.sh'), bindir, use_sudo=True)
+        put(localenvdir, envdir, use_sudo=True)
+        sudo('chown -R %s:%s %s' % (SITE_USER, SITE_USER, site_root))
+        su('git clone %s %s' % (SITE_REPO, SITE_NAME))
 
 
 def install_dependencies():
@@ -136,13 +180,13 @@ def install_dependencies():
 
 
 def add_apt_sources():
-    fabtools.deb.add_apt_key(url='http://www.rabbitmq.com/rabbitmq-signing-key-public.asc')
+    deb.add_apt_key(url='http://www.rabbitmq.com/rabbitmq-signing-key-public.asc')
     require.deb.source('rabbitmq-server', 'http://www.rabbitmq.com/debian/', 'testing', 'main')
     require.deb.uptodate_index(max_age={'hour': 1})
 
 
 def install_debian_packages():
-    fabtools.deb.add_apt_key(url='http://www.rabbitmq.com/rabbitmq-signing-key-public.asc')
+    deb.add_apt_key(url='http://www.rabbitmq.com/rabbitmq-signing-key-public.asc')
     require.deb.source('rabbitmq-server', 'http://www.rabbitmq.com/debian/', 'testing', 'main')
     require.deb.uptodate_index(max_age={'hour': 1})
 
@@ -160,7 +204,7 @@ def install_debian_packages():
         'postgresql',
         'postgresql-server-dev-9.1',
         'memcached',
-        'vim-nox',
+        'vim',
         'exuberant-ctags',
         'multitail',
         'curl',
@@ -188,5 +232,65 @@ def install_python_packages():
     ], use_sudo=True)
 
 
+def su(cmd, user=None):
+    if user is None:
+        user = SITE_USER
+    sudo("su %s -c '%s'" % (user, cmd))
+
+
+def vsu(cmd, virtualenv=None, user=None):
+    if virtualenv is None:
+        virtualenv = get_site_version()
+    if user is None:
+        user = SITE_USER
+    home = home_directory(user)
+    venvdir = join(home, 'venvs', virtualenv, 'bin/activate')
+    sudo("su %s -c 'source %s; %s'" % (user, venvdir, cmd))
+
+def update_site_version(site_version):
+    runnerenv = join(home_directory(SITE_USER), 'site/bin/runnerenv/SITE_VERSION')
+    su('echo %s > %s' % (site_version, runnerenv))
+
+
+def update_repo(commit=None):
+    repodir = join(home_directory(SITE_USER), 'site', SITE_NAME)
+    with cd(repodir):
+        su('git fetch')
+        if commit is None:
+            commit = 'origin/master'
+        su('git checkout %s' % commit)
+
+
+def collectstatic():
+    envdir = join(home_directory(SITE_USER), 'site', 'env')
+    djangodir = join(home_directory(SITE_USER), 'site', SITE_NAME, 'companionpages')
+    # ignoring logs and media objects in our s3 container
+    # this shouldn't be necessary but is a consequence of using django-storages with the boto backend
+    # and as of now, django-storages doesn't support separate containers for static and media.
+    with cd(djangodir):
+        vsu('envdir %s ./manage.py collectstatic --ignore *logs* --ignore *materials* --ignore *articles*' % envdir)
+
+
+def get_site_version():
+    return run('cat %s' % join(home_directory(SITE_USER), 'site/bin/runnerenv/SITE_VERSION'))
+    
+
 def randomstring(n):
     return ''.join(random.choice(string.ascii_letters + string.digits + '~@#%^&*-_') for x in range(n))
+
+
+def virtualenv_name(commit=None):
+    if commit is None:
+        repodir = join(home_directory(SITE_USER), 'site', SITE_NAME)
+        with cd(repodir):
+            commit = run('git rev-parse HEAD').strip()
+    timestamp = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+    return '%s-%s' % (timestamp, commit)
+
+
+def template_path(filename):
+    return join(FAB_HOME, 'templates', filename)
+
+
+def mkvirtualenv(virtualenv):
+    su('source ~/.bash_aliases; mkvirtualenv %s' % virtualenv)

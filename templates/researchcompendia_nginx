@@ -10,12 +10,12 @@ server {
     access_log /home/tyler/site/logs/tyler.access.log;
     error_log /home/tyler/site/logs/tyler.error.log;
 
-    #location /nginx_status {
-    #    stub_status on;
-    #    access_log off;
-    #    allow {{ nginx_status_allowed_host }};
-    #    deny all;
-    #}
+    location /nginx_status {
+        stub_status on;
+        access_log off;
+        allow 127.0.0.1;
+        deny all;
+    }
 
     location /static/ {
         alias /home/tyler/site/static/;
