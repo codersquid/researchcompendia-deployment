@@ -1,28 +1,27 @@
 import datetime, string, random
 from os.path import join, dirname, abspath
 from fabric.api import run, task, env, cd, sudo, local, put
-from fabric.contrib.files import sed, upload_template
-from fabtools import require, supervisor, postgres, deb
+from fabric.contrib.files import sed
+from fabtools import require, supervisor, postgres, deb, files
+from fabtools.files import upload_template
 from fabtools.user import home_directory
 import fabtools
 
 env.disable_known_hosts = True
+env.user = 'vagrant'
 env.hosts = [
     #'researchcompendia.org',
     #'labs.researchcompendia.org',
     # my remote dev box
-    '67.207.156.211',
-    #'vagrant@127.0.0.1:2222',
+    #'67.207.156.211',
+    'vagrant@127.0.0.1:2222',
 ]
-
-#env.user = 'vagrant'
-#result = local('vagrant ssh-config | grep IdentityFile | cut -f4 -d " "', capture=True)
-#env.key_filename = result
-
+if env.user == 'vagrant':
+    env.key_filename = local('vagrant ssh-config | grep IdentityFile | cut -f4 -d " "', capture=True)
 SITE_USER = 'tyler'
 SITE_NAME = 'tyler'
 SITE_REPO = 'git://github.com/researchcompendia/researchcompendia.git'
-SITE_ENVIRONMENT = 'dev'
+SITE_ENVIRONMENT = 'local'
 FAB_HOME = dirname(abspath(__file__))
 
 
@@ -43,10 +42,8 @@ def setup(version_tag=None):
     install_dependencies()
     lockdowns()
     setup_database()
-
-@task
-def contsetup(version_tag=None):
     setup_user()
+    update_repo(version_tag)
     setup_django(version_tag)
     setup_nginx()
     setup_supervisor()
@@ -71,8 +68,6 @@ def contsetup(version_tag=None):
     # restart supervisor
 
 
-
-
 def setup_rabbitmq(user=None):
     if user is None:
         user = SITE_USER
@@ -80,24 +75,26 @@ def setup_rabbitmq(user=None):
     sudo('rabbitmqctl delete_user guest')
     sudo('rabbitmqctl add_user %s "%s"' % (user, secret))
     sudo('rabbitmqctl set_permissions -p / %s ".*" ".*" ".*"' % user)
-    template_file = template_path('DJANGO_BROKER_URL')
+    template_dir = join(FAB_HOME, 'templates')
     destination_file = join(home_directory(user), 'site', 'env', 'DJANGO_BROKER_URL')
-    upload_template(template_file, destination_file, use_jinja=True, context={'password': secret}, use_sudo=True)
-    sudo('chown %s:%s %s' % (user, user, destination_file))
+    upload_template('DJANGO_BROKER_URL', destination_file, use_jinja=True, context={'password': secret},
+        template_dir=template_dir, use_sudo=True, chown=True, user=SITE_USER)
 
 
 def setup_nginx():
-    upload_template(template_path('researchcompendia_nginx'),
-        '/etc/nginx/sites-available/researchcompendia', use_sudo=True)
+    template_dir = join(FAB_HOME, 'templates')
+    upload_template('researchcompendia_nginx', '/etc/nginx/sites-available/researchcompendia',
+            use_jinja=True, use_sudo=True, template_dir=template_dir)
     # figure out how to do the status conf
     require.nginx.enabled('researchcompendia')
 
 
 def setup_supervisor():
-    upload_template(template_path('researchcompendia_web.conf'),
-        '/etc/supervisor/conf.d/researchcompendia_web.conf', use_sudo=True)
-    upload_template(template_path('celeryd.conf'),
-        '/etc/supervisor/conf.d/celeryd.conf', use_sudo=True)
+    template_dir = join(FAB_HOME, 'templates')
+    upload_template('researchcompendia_web.conf', '/etc/supervisor/conf.d/researchcompendia_web.conf',
+        template_dir=template_dir, use_sudo=True)
+    upload_template('celeryd.conf', '/etc/supervisor/conf.d/celeryd.conf', use_sudo=True,
+        template_dir=template_dir)
     supervisor.update_config()
 
 
@@ -121,7 +118,7 @@ def migrate_and_load_database():
     envdir = join(home_directory(SITE_USER), 'site', 'env')
     djangodir = join(home_directory(SITE_USER), 'site', SITE_NAME, 'companionpages')
     with cd(djangodir):
-        su('envdir %s ./manage.py syncdb --noinput --migrate' % envdir)
+        vsu('envdir %s ./manage.py syncdb --noinput --migrate' % envdir)
         vsu('envdir %s ./manage.py loaddata fixtures/*' % envdir)
 
 
@@ -139,18 +136,13 @@ def setup_database():
     if not postgres.database_exists(SITE_USER):
         su('createdb -w -O %s %s' % (SITE_USER, SITE_USER), 'postgres')
 
-
-
-
-
-
-
 def setup_user():
     if not fabtools.user.exists(SITE_USER):
         sudo('useradd -s/bin/bash -d/home/%s -m %s' % (SITE_USER, SITE_USER))
-        bash_aliases = join(home_directory(SITE_USER), '.bash_aliases')
-        put(template_path('_bash_aliases'), bash_aliases, use_sudo=True)
-        sudo('chown %s:%s %s' % (SITE_USER, SITE_USER, bash_aliases))
+
+    bash_aliases = join(home_directory(SITE_USER), '.bash_aliases')
+    put(template_path('_bash_aliases'), bash_aliases, use_sudo=True)
+    sudo('chown %s:%s %s' % (SITE_USER, SITE_USER, bash_aliases))
 
     site_root = join(home_directory(SITE_USER), 'site')
     bindir = join(site_root, 'bin')
@@ -169,7 +161,6 @@ def setup_user():
         put(template_path('check_downloads.sh'), bindir, use_sudo=True)
         put(localenvdir, envdir, use_sudo=True)
         sudo('chown -R %s:%s %s' % (SITE_USER, SITE_USER, site_root))
-        su('git clone %s %s' % (SITE_REPO, SITE_NAME))
 
 
 def install_dependencies():
@@ -247,13 +238,18 @@ def vsu(cmd, virtualenv=None, user=None):
     venvdir = join(home, 'venvs', virtualenv, 'bin/activate')
     sudo("su %s -c 'source %s; %s'" % (user, venvdir, cmd))
 
+
 def update_site_version(site_version):
     runnerenv = join(home_directory(SITE_USER), 'site/bin/runnerenv/SITE_VERSION')
     su('echo %s > %s' % (site_version, runnerenv))
 
 
 def update_repo(commit=None):
-    repodir = join(home_directory(SITE_USER), 'site', SITE_NAME)
+    site_root = join(home_directory(SITE_USER), 'site')
+    repodir = join(site_root, SITE_NAME)
+    if not files.is_dir(repodir):
+        with cd(site_root):
+            su('git clone %s %s' % (SITE_REPO, SITE_NAME))
     with cd(repodir):
         su('git fetch')
         if commit is None:
