@@ -21,7 +21,7 @@ if env.user == 'vagrant':
 SITE_USER = 'tyler'
 SITE_NAME = 'tyler'
 SITE_REPO = 'git://github.com/researchcompendia/researchcompendia.git'
-SITE_ENVIRONMENT = 'local'
+SITE_ENVIRONMENT = 'vagrant'
 FAB_HOME = dirname(abspath(__file__))
 
 
