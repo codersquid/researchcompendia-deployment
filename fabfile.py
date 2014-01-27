@@ -8,13 +8,13 @@ from fabtools.user import home_directory
 import fabtools
 
 env.disable_known_hosts = True
-env.user = 'vagrant'
+#env.user = 'vagrant'
 env.hosts = [
     #'researchcompendia.org',
     #'labs.researchcompendia.org',
     # my remote dev box
-    #'67.207.156.211',
-    'vagrant@127.0.0.1:2222',
+    '67.207.156.211',
+    #'vagrant@127.0.0.1:2222',
 ]
 if env.user == 'vagrant':
     env.key_filename = local('vagrant ssh-config | grep IdentityFile | cut -f4 -d " "', capture=True)
@@ -53,7 +53,7 @@ def setup(version_tag=None):
     # install, files, restart
     #setup_collectd()
 
-    ## statsite
+    # statsite
     #setup_statsite()
 
     ## papertrail
@@ -90,11 +90,8 @@ def setup_nginx():
 
 
 def setup_supervisor():
-    template_dir = join(FAB_HOME, 'templates')
-    upload_template('researchcompendia_web.conf', '/etc/supervisor/conf.d/researchcompendia_web.conf',
-        template_dir=template_dir, use_sudo=True)
-    upload_template('celeryd.conf', '/etc/supervisor/conf.d/celeryd.conf', use_sudo=True,
-        template_dir=template_dir)
+    put(template_path('researchcompendia_web.conf'), '/etc/supervisor/conf.d/researchcompendia_web.conf', use_sudo=True)
+    put(template_path('celeryd.conf'), '/etc/supervisor/conf.d/celeryd.conf', use_sudo=True)
     supervisor.update_config()
 
 
