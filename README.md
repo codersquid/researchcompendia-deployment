@@ -17,10 +17,12 @@ shell script to a fabric file, and that's all my bootstrap script did.
 * check out the repo
 * navigate to the repo directory
 * get the vagrant box up and running
-* run `fab setup` 
+* run `fab vagrant provision` 
 
-Rerunning setup? No, if you want to do that you need to `vagrant destroy` first
+Rerunning provision? Probably not, if you want to do that you need to `vagrant destroy` first
 and start over.
+
+* run `fab dev deploy`, can also use vagrant, staging, prod
 
 ### Plans
 
@@ -28,8 +30,5 @@ I am new to fabric and new to vagrant. Here are my tentative plans:
 
 * Refactor or dramatically change things while I learn better practices.
 * get the script running with any host, not just a vagrant box.
-* make `setup` sync expected state versus scratch.
-* `test`
+* make `provision` sync expected state versus scratch.
 * `deploy` (does the work to deploy a new version of the site)
-* `release` (does work to package a new release, which right now means we merge develop to master and create a new tag)
-
