@@ -1,6 +1,10 @@
 #!/bin/bash
 
+# run regularly
+# 1 1 * * * (/home/tyler/site/bin/check_downloads.sh >> /home/tyler/site/logs/cron_checkdownloads.log 2>&1)
+
 set -e
+source /home/tyler/site/bin/environment.sh
 if [ -z "$SITE_VERSION" ]; then
     echo "stop! SITE_VERSION is not set"
     exit 1
@@ -17,4 +21,4 @@ source ${VIRTUALENV}/bin/activate
 
 cd $DJANGODIR
 
-envdir $SITE_ENVIRONMENT ./manage.py check_downloads -a
+./manage.py check_downloads -a
