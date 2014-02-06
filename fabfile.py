@@ -80,26 +80,38 @@ def vagrant():
 
 @task
 def uname():
+    """the hello world of fabric
+    """
     fabric.api.require('site', 'available', 'hosts', 'site_environment',
         provided_by=('dev', 'staging', 'prod', 'vagrant'))
     run('uname -a')
 
-
 @task
 def deploy(version_tag=None):
+    """deploys a new version of the site
+
+    version_tag: a git tag, defaults to HEAD
+    """
     fabric.api.require('site', 'available', 'hosts', 'site_environment',
         provided_by=('dev', 'staging', 'prod', 'vagrant'))
 
+    maintenance_enable()
     supervisor.stop_process(SITE_NAME)
+    supervisor.stop_process('celery')
 
     new_env = virtualenv_name(commit=version_tag)
     mkvirtualenv(new_env)
+    rabbitmq_credentials_backup()
+    setup_site_user()
+    rabbitmq_credentials_restore()
     update_site_version(new_env)
     update_repo(commit=version_tag)
     install_site_requirements(new_env)
     collectstatic()
 
     supervisor.start_process(SITE_NAME)
+    supervisor.start_process('celery')
+    maintenance_disable()
 
 
 @task
@@ -112,7 +124,7 @@ def provision(version_tag=None):
     install_dependencies()
     lockdowns()
     setup_database()
-    setup_user()
+    setup_site_user()
     update_repo(version_tag)
     setup_django(version_tag)
     setup_nginx()
@@ -150,12 +162,19 @@ def setup_rabbitmq(user=None):
     sudo('rabbitmqctl add_user %s "%s"' % (user, secret))
     sudo('rabbitmqctl set_permissions -p / %s ".*" ".*" ".*"' % user)
     destination_file = join(home_directory(user), 'site', 'env', 'DJANGO_BROKER_URL')
-    upload_template('DJANGO_BROKER_URL', destination_file, use_jinja=True, context={'password': secret},
+    upload_template('DJANGO_BROKER_URL', destination_file, use_jinja=True,
+        context={'user': SITE_USER, 'password': secret},
         template_dir=TEMPLATE_DIR, use_sudo=True, chown=True, user=SITE_USER)
+    # make a backup of DJANGO_BROKER_URL for when we run deployments
+    rabbitmq_credentials_backup()
 
 
 def setup_nginx():
     site_root = join(home_directory(SITE_USER), 'site')
+    upload_template('maintenance_nginx', '/etc/nginx/sites-available/maintenance',
+        use_sudo=True, template_dir=TEMPLATE_DIR)
+    upload_template('maintenance_index.html', '/usr/share/nginx/www/index.html',
+        use_sudo=True, template_dir=TEMPLATE_DIR)
     upload_template('researchcompendia_nginx',
         '/etc/nginx/sites-available/researchcompendia',
         context={
@@ -167,7 +186,6 @@ def setup_nginx():
         },
         use_jinja=True, use_sudo=True, template_dir=TEMPLATE_DIR)
     require.nginx.enabled('researchcompendia')
-
 
 def setup_supervisor():
     site_root = join(home_directory(SITE_USER), 'site')
@@ -232,7 +250,15 @@ def setup_database():
     if not postgres.database_exists(SITE_USER):
         require.postgres.database(SITE_USER, SITE_USER, encoding='UTF8', locale='en_US.UTF-8')
 
-def setup_user():
+def rabbitmq_credentials_backup():
+    site_envdir = join(home_directory(SITE_USER), 'site', 'env')
+    su('cp %s %s' % (join(site_envdir, 'DJANGO_BROKER_URL'), home_directory(SITE_USER)))
+
+def rabbitmq_credentials_restore():
+    site_envdir = join(home_directory(SITE_USER), 'site', 'env')
+    su('cp %s %s' % (home_directory(SITE_USER), join(site_envdir, 'DJANGO_BROKER_URL')))
+
+def setup_site_user():
     if not fabtools.user.exists(SITE_USER):
         sudo('useradd -s/bin/bash -d/home/%s -m %s' % (SITE_USER, SITE_USER))
 
@@ -255,9 +281,14 @@ def setup_user():
         sudo('chown -R %s:%s %s' % (SITE_USER, SITE_USER, site_root))
 
 
+def update_dependencies():
+    require.deb.uptodate_index(max_age={'hour': 1})
+    install_debian_packages()
+    install_python_packages()
+
+
 def install_dependencies():
     add_apt_sources()
-    require.deb.uptodate_index(max_age={'hour': 1})
     install_debian_packages()
     install_python_packages()
 
@@ -269,9 +300,6 @@ def add_apt_sources():
 
 
 def install_debian_packages():
-    deb.add_apt_key(url='http://www.rabbitmq.com/rabbitmq-signing-key-public.asc')
-    require.deb.source('rabbitmq-server', 'http://www.rabbitmq.com/debian/', 'testing', 'main')
-    require.deb.uptodate_index(max_age={'hour': 1})
 
     # os packages
     require.deb.packages([
@@ -279,7 +307,7 @@ def install_debian_packages():
         'python-dev',
         'build-essential',
         #'python-pip',
-        'nginx',
+        'nginx-extras',
         'libxslt1-dev',
         'supervisor',
         'git',
@@ -357,7 +385,20 @@ def collectstatic():
     # this shouldn't be necessary but is a consequence of using django-storages with the boto backend
     # and as of now, django-storages doesn't support separate containers for static and media.
     with cd(djangodir):
-        vsu('envdir %s/ ./manage.py collectstatic --ignore *logs* --ignore *materials* --ignore *articles*' % envdir)
+        vsu('envdir %s/ ./manage.py collectstatic --noinput --clear --ignore *logs* --ignore *materials* --ignore *articles*' % envdir)
+
+
+def maintenance_enable():
+    """Take down the researchcompendia site and enable the maintenance site
+    """
+    require.nginx.disabled('researchcompendia')
+    require.nginx.enabled('maintenance')
+
+def maintenance_disable():
+    """Take down the maintenance site and enable the researchcompendia site
+    """
+    require.nginx.disable('maintenance')
+    require.nginx.enable('researchcompendia')
 
 
 def get_site_version():
