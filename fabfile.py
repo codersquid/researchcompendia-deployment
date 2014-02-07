@@ -18,7 +18,7 @@ from os.path import join, dirname, abspath
 import fabric.api
 from fabric.api import run, task, env, cd, sudo, local, put
 from fabric.contrib.files import sed
-from fabtools import require, supervisor, postgres, deb, files
+from fabtools import cron, require, supervisor, postgres, deb, files
 from fabtools.files import upload_template
 from fabtools.user import home_directory
 import fabtools
@@ -125,6 +125,7 @@ def provision(version_tag=None):
     lockdowns()
     setup_database()
     setup_site_user()
+    add_download_checker()
     update_repo(version_tag)
     setup_django(version_tag)
     setup_nginx()
@@ -145,6 +146,7 @@ def provision(version_tag=None):
     # wrap remote_syslog
     # supervisor file
     # restart supervisor
+
 
 
 def setup_collectd():
@@ -264,21 +266,32 @@ def setup_site_user():
 
     site_root = join(home_directory(SITE_USER), 'site')
     bindir = join(site_root, 'bin')
-    envdir = join(site_root, 'env')
-    localenvdir = join(FAB_HOME, 'env', env.site_environment, '*')
 
     with cd(home_directory(SITE_USER)):
         su('mkdir -p venvs site')
 
     with cd(site_root):
-        # make directories
-        su('mkdir -p logs bin env bin/runnerenv')
-        # add site files
+        su('mkdir -p logs bin env')
         put(template_path('runserver.sh'), bindir, use_sudo=True)
         put(template_path('celeryworker.sh'), bindir, use_sudo=True)
         put(template_path('check_downloads.sh'), bindir, use_sudo=True)
-        put(localenvdir, envdir, use_sudo=True)
         sudo('chown -R %s:%s %s' % (SITE_USER, SITE_USER, site_root))
+
+    with cd(bindir):
+        su('chmod +x runserver.sh celeryworker.sh check_downloads.sh')
+
+def add_download_checker():
+    site_root = join(home_directory(SITE_USER), 'site')
+    bindir = join(site_root, 'bin')
+    job = join(home_directory(SITE_USER), 'check_downloads')
+    upload_template('check_downloads', job,
+        context={
+            'command': join(bindir, 'check_downloads.sh'),
+            'logfile': join(site_root, 'logs', 'cron_checkdownloads.log'),
+        },
+        use_jinja=True, use_sudo=True, template_dir=TEMPLATE_DIR)
+    sudo('chown %s:%s %s' % (SITE_USER, SITE_USER, job))
+    su('crontab %s' % job)
 
 
 def update_dependencies():
