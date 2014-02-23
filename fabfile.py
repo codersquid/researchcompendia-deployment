@@ -13,12 +13,12 @@ $ fab staging deploy
 $ fab prod deploy:1.0.1-b7
 
 """
-import datetime, string, random
+import datetime, string, random, re
 from os.path import join, dirname, abspath
 import fabric.api
 from fabric.api import run, task, env, cd, sudo, local, put
 from fabric.contrib.files import sed
-from fabtools import cron, require, supervisor, postgres, deb, files
+from fabtools import require, supervisor, postgres, deb, files
 from fabtools.files import upload_template
 from fabtools.user import home_directory
 import fabtools
@@ -39,7 +39,7 @@ def dev():
         'site': 'dev.codersquid.com',
         'available': 'researchcompendia',
         'hosts': ['dev.codersquid.com'],
-        'site_environment': 'dev',
+        'site_environment': 'dev_environment.sh',
     })
 
 
@@ -50,7 +50,7 @@ def staging():
         'site': 'labs.researchcompendia.org',
         'available': 'researchcompendia',
         'hosts': ['labs.researchcompendia.org'],
-        'site_environment': 'staging',
+        'site_environment': 'staging_environment.sh',
     })
 
 
@@ -61,7 +61,7 @@ def prod():
         'site': 'researchcompendia.org',
         'available': 'researchcompendia',
         'hosts': ['researchcompendia.org'],
-        'site_environment': 'prod',
+        'site_environment': 'prod_environment.sh',
     })
 
 
@@ -73,7 +73,7 @@ def vagrant():
         'site': '127.0.0.1:2222',
         'available': 'researchcompendia',
         'hosts': ['127.0.0.1:2222'],
-        'site_environment': 'vagrant',
+        'site_environment': 'dev_environment.sh',
         'key_filename': local('vagrant ssh-config | grep IdentityFile | cut -f4 -d " "', capture=True),
     })
 
@@ -101,9 +101,7 @@ def deploy(version_tag=None):
 
     new_env = virtualenv_name(commit=version_tag)
     mkvirtualenv(new_env)
-    rabbitmq_credentials_backup()
-    setup_site_user()
-    rabbitmq_credentials_restore()
+    setup_site_root()
     update_site_version(new_env)
     update_repo(commit=version_tag)
     install_site_requirements(new_env)
@@ -125,6 +123,8 @@ def provision(version_tag=None):
     lockdowns()
     setup_database()
     setup_site_user()
+    setup_site_root()
+    setup_envvars()
     add_download_checker()
     update_repo(version_tag)
     setup_django(version_tag)
@@ -159,16 +159,15 @@ def setup_collectd():
 def setup_rabbitmq(user=None):
     if user is None:
         user = SITE_USER
+
+    envfile = join(home_directory(SITE_USER), 'site/bin/environment.sh')
     secret = randomstring(64)
     sudo('rabbitmqctl delete_user guest')
     sudo('rabbitmqctl add_user %s "%s"' % (user, secret))
     sudo('rabbitmqctl set_permissions -p / %s ".*" ".*" ".*"' % user)
-    destination_file = join(home_directory(user), 'site', 'env', 'DJANGO_BROKER_URL')
-    upload_template('DJANGO_BROKER_URL', destination_file, use_jinja=True,
-        context={'user': SITE_USER, 'password': secret},
-        template_dir=TEMPLATE_DIR, use_sudo=True, chown=True, user=SITE_USER)
-    # make a backup of DJANGO_BROKER_URL for when we run deployments
-    rabbitmq_credentials_backup()
+    amqp_url = 'amqp://%s:%s@localhost:5672//' % (SITE_USER, secret)
+    sed(envfile, 'DJANGO_BROKER_URL=".*"', 'DJANGO_BROKER_URL="%s"' % amqp_url, use_sudo=True)
+
 
 
 def setup_nginx():
@@ -194,7 +193,7 @@ def setup_supervisor():
     upload_template('researchcompendia.conf', 
         '/etc/supervisor/conf.d/researchcompendia_web.conf',
         context={
-            'command': 'envdir %s/ %s' % (join(site_root, 'bin', 'runnerenv'), join(site_root, 'bin', 'runserver.sh')),
+            'command': join(site_root, 'bin', 'runserver.sh'),
             'user': SITE_USER,
             'group': SITE_GROUP,
             'logfile': join(site_root, 'logs', 'gunicorn_supervisor.log'),
@@ -204,7 +203,7 @@ def setup_supervisor():
     upload_template('celeryd.conf', 
         '/etc/supervisor/conf.d/celeryd.conf',
         context={
-            'command': 'envdir %s/ %s' % (join(site_root, 'bin', 'runnerenv'), join(site_root, 'bin', 'celeryworker.sh')),
+            'command': join(site_root, 'bin', 'celeryworker.sh'),
             'user': SITE_USER,
             'group': SITE_GROUP,
             'logfile': join(site_root, 'logs', 'celery_worker.log'),
@@ -231,11 +230,11 @@ def setup_django(version_tag):
 
 
 def migrate_and_load_database():
-    envdir = join(home_directory(SITE_USER), 'site', 'env')
+    environment = join(home_directory(SITE_USER), 'site/bin/environment.sh')
     djangodir = join(home_directory(SITE_USER), 'site', SITE_NAME, 'companionpages')
     with cd(djangodir):
-        vsu('envdir %s/ ./manage.py syncdb --noinput --migrate' % envdir)
-        vsu('envdir %s/ ./manage.py loaddata fixtures/*' % envdir)
+        vsu('source %s; ./manage.py syncdb --noinput --migrate' % environment)
+        vsu('source %s; ./manage.py loaddata fixtures/*' % environment)
 
 
 def install_site_requirements(virtualenv):
@@ -251,6 +250,9 @@ def setup_database():
         su('createuser -S -D -R -w %s' % SITE_USER, 'postgres')
     if not postgres.database_exists(SITE_USER):
         require.postgres.database(SITE_USER, SITE_USER, encoding='UTF8', locale='en_US.UTF-8')
+    # change default port
+    # port = 5432
+    # /etc/postgresql/9.1/main/postgresql.conf
 
 def rabbitmq_credentials_backup():
     site_envdir = join(home_directory(SITE_USER), 'site', 'env')
@@ -264,6 +266,17 @@ def setup_site_user():
     if not fabtools.user.exists(SITE_USER):
         sudo('useradd -s/bin/bash -d/home/%s -m %s' % (SITE_USER, SITE_USER))
 
+
+def setup_envvars():
+    bindir = join(home_directory(SITE_USER), 'site', 'bin')
+    envfile = join(FAB_HOME, 'env', env.site_environment)
+    with cd(bindir):
+        put(envfile , bindir, use_sudo=True)
+        sudo('mv %s/%s %s/environment.sh' % (bindir, env.site_environment, bindir))
+        sudo('chown %s:%s environment.sh' % (SITE_USER, SITE_USER))
+
+
+def setup_site_root():
     site_root = join(home_directory(SITE_USER), 'site')
     bindir = join(site_root, 'bin')
 
@@ -271,7 +284,7 @@ def setup_site_user():
         su('mkdir -p venvs site')
 
     with cd(site_root):
-        su('mkdir -p logs bin env')
+        su('mkdir -p logs bin env media static')
         put(template_path('runserver.sh'), bindir, use_sudo=True)
         put(template_path('celeryworker.sh'), bindir, use_sudo=True)
         put(template_path('check_downloads.sh'), bindir, use_sudo=True)
@@ -353,7 +366,6 @@ def install_python_packages():
     require.python.packages([
         'virtualenvwrapper',
         'setproctitle',
-        'envdir',
     ], use_sudo=True)
 
 
@@ -374,8 +386,8 @@ def vsu(cmd, virtualenv=None, user=None):
 
 
 def update_site_version(site_version):
-    runnerenv = join(home_directory(SITE_USER), 'site/bin/runnerenv/SITE_VERSION')
-    su('echo %s > %s' % (site_version, runnerenv))
+    envfile = join(home_directory(SITE_USER), 'site/bin/environment.sh')
+    sed(envfile, 'SITE_VERSION=".*"', 'SITE_VERSION="%s"' % site_version, use_sudo=True)
 
 
 def update_repo(commit=None):
@@ -392,13 +404,13 @@ def update_repo(commit=None):
 
 
 def collectstatic():
-    envdir = join(home_directory(SITE_USER), 'site', 'env')
+    environment = join(home_directory(SITE_USER), 'site/bin/environment.sh')
     djangodir = join(home_directory(SITE_USER), 'site', SITE_NAME, 'companionpages')
     # ignoring logs and media objects in our s3 container
     # this shouldn't be necessary but is a consequence of using django-storages with the boto backend
     # and as of now, django-storages doesn't support separate containers for static and media.
     with cd(djangodir):
-        vsu('envdir %s/ ./manage.py collectstatic --noinput --clear --ignore *logs* --ignore *materials* --ignore *articles*' % envdir)
+        vsu('source %s; ./manage.py collectstatic --noinput --clear --ignore *logs* --ignore *materials* --ignore *articles*' % environment)
 
 
 def maintenance_enable():
@@ -415,12 +427,14 @@ def maintenance_disable():
 
 
 def get_site_version():
-    return run('cat %s' % join(home_directory(SITE_USER), 'site/bin/runnerenv/SITE_VERSION'))
-    
+    site_line = run('grep SITE_VERSION %s' % join(home_directory(SITE_USER), 'site/bin/environment.sh'))
+    match = re.search(r'export SITE_VERSION="(?P<version>[^"]+)', site_line)
+    g = match.groupdict()
+    return g['version']
+
 
 def randomstring(n):
     return ''.join(random.choice(string.ascii_letters + string.digits + '~@#%^&*-_') for x in range(n))
-
 
 def virtualenv_name(commit=None):
     if commit is None:
