@@ -17,7 +17,7 @@ import datetime, string, random, re
 from os.path import join, dirname, abspath
 import fabric.api
 from fabric.api import run, task, env, cd, sudo, local, put
-from fabric.contrib.files import sed
+from fabric.contrib.files import sed, append
 from fabtools import require, supervisor, postgres, deb, files
 from fabtools.files import upload_template
 from fabtools.user import home_directory
@@ -120,7 +120,8 @@ def provision(version_tag=None):
     fabric.api.require('site', 'available', 'hosts', 'site_environment',
         provided_by=('dev', 'staging', 'prod', 'vagrant'))
     install_dependencies()
-    lockdowns()
+    lockdown_nginx()
+    lockdown_ssh()
     setup_database()
     setup_site_user()
     setup_site_root()
@@ -153,7 +154,7 @@ def setup_collectd():
     hostname = run('hostname')
     upload_template('collectd.conf', '/etc/collectd/collectd.conf', use_jinja=True,
         context={'carbonhost': env.carbon, 'hostname': hostname},
-        template_dir=TEMPLATE_DIR, use_sudo=True, chown=True, user=SITE_USER)
+        template_dir=TEMPLATE_DIR, use_sudo=True)
     sudo('/etc/init.d/collectd restart')
 
 def setup_rabbitmq(user=None):
@@ -213,12 +214,15 @@ def setup_supervisor():
     supervisor.update_config()
 
 
-def lockdowns():
+def lockdown_nginx():
     # don't share nginx version in header and error pages
     sed('/etc/nginx/nginx.conf', '# server_tokens off;', 'server_tokens off;', use_sudo=True)
-    # require keyfile authentication
-    sed('/etc/ssh/sshd_config', '^#PasswordAuthentication yes', 'PasswordAuthentication no', use_sudo=True)
+    sudo('service nginx restart')
 
+def lockdown_ssh():
+    sed('/etc/ssh/sshd_config', '^#PasswordAuthentication yes', 'PasswordAuthentication no', use_sudo=True)
+    append('/etc/ssh/sshd_config', ['UseDNS no', 'PermitRootLogin no', 'DebianBanner no', 'TcpKeepAlive yes'], use_sudo=True)
+    sudo('service ssh restart')
 
 def setup_django(version_tag):
     virtualenv = virtualenv_name(commit=version_tag)
@@ -245,7 +249,7 @@ def install_site_requirements(virtualenv):
 
 def setup_database():
     require.postgres.server()
-    # NOTE: fabtools.require.postgres.user did not allow me to create a user with no pw
+    # NOTE: fabtools.require.postgres.user did not allow me to create a user with no pw prompt?
     if not postgres.user_exists(SITE_USER):
         su('createuser -S -D -R -w %s' % SITE_USER, 'postgres')
     if not postgres.database_exists(SITE_USER):
@@ -254,13 +258,6 @@ def setup_database():
     # port = 5432
     # /etc/postgresql/9.1/main/postgresql.conf
 
-def rabbitmq_credentials_backup():
-    site_envdir = join(home_directory(SITE_USER), 'site', 'env')
-    su('cp %s %s' % (join(site_envdir, 'DJANGO_BROKER_URL'), home_directory(SITE_USER)))
-
-def rabbitmq_credentials_restore():
-    site_envdir = join(home_directory(SITE_USER), 'site', 'env')
-    su('cp %s %s' % (home_directory(SITE_USER), join(site_envdir, 'DJANGO_BROKER_URL')))
 
 def setup_site_user():
     if not fabtools.user.exists(SITE_USER):
@@ -268,12 +265,23 @@ def setup_site_user():
 
 
 def setup_envvars():
-    bindir = join(home_directory(SITE_USER), 'site', 'bin')
-    envfile = join(FAB_HOME, 'env', env.site_environment)
+    env_template_dir = join(FAB_HOME, 'env')
+    secret = randomstring(64)
+    site_root = join(home_directory(SITE_USER), 'site')
+    bindir = join(site_root, 'bin')
+    static_root = join(site_root, 'static')
+    media_root = join(site_root, 'media')
+    destination_envfile = join(bindir, 'environment.sh')
+
     with cd(bindir):
-        put(envfile , bindir, use_sudo=True)
-        sudo('mv %s/%s %s/environment.sh' % (bindir, env.site_environment, bindir))
-        sudo('chown %s:%s environment.sh' % (SITE_USER, SITE_USER))
+        upload_template(env.site_environment, destination_envfile,
+            context={
+                'secret_key': secret,
+                'static_root': static_root,
+                'media_root': media_root,
+            },
+            template_dir=env_template_dir,
+            use_jinja=True, use_sudo=True, chown=True, user=SITE_USER)
 
 
 def setup_site_root():
