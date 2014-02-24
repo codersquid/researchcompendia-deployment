@@ -178,8 +178,8 @@ def setup_nginx():
             'server_name': env.site,
             'access_log': join(site_root, 'logs', 'access.log'),
             'error_log': join(site_root, 'logs', 'error.log'),
-            'static_location': join(site_root, 'static'),
-            'media_location': join(site_root, 'media'),
+            'static_location': join(site_root, 'static/'),
+            'media_location': join(site_root, 'media/'),
         },
         use_jinja=True, use_sudo=True, template_dir=TEMPLATE_DIR)
     require.nginx.enabled('researchcompendia')
