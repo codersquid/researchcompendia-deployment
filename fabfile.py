@@ -36,9 +36,9 @@ TEMPLATE_DIR = join(FAB_HOME, 'templates')
 def dev():
     env.update({
         'carbon': '10.176.162.45',
-        'site': 'dev.codersquid.com',
+        'site': '.codersquid.com',
         'available': 'researchcompendia',
-        'hosts': ['dev.codersquid.com'],
+        'hosts': ['67.207.156.211:2222'],
         'site_environment': 'dev_environment.sh',
     })
 
@@ -170,13 +170,8 @@ def setup_rabbitmq(user=None):
     sed(envfile, 'DJANGO_BROKER_URL=".*"', 'DJANGO_BROKER_URL="%s"' % amqp_url, use_sudo=True)
 
 
-
 def setup_nginx():
     site_root = join(home_directory(SITE_USER), 'site')
-    upload_template('maintenance_nginx', '/etc/nginx/sites-available/maintenance',
-        use_sudo=True, template_dir=TEMPLATE_DIR)
-    upload_template('maintenance_index.html', '/usr/share/nginx/www/index.html',
-        use_sudo=True, template_dir=TEMPLATE_DIR)
     upload_template('researchcompendia_nginx',
         '/etc/nginx/sites-available/researchcompendia',
         context={
@@ -188,6 +183,8 @@ def setup_nginx():
         },
         use_jinja=True, use_sudo=True, template_dir=TEMPLATE_DIR)
     require.nginx.enabled('researchcompendia')
+    put(template_path('maintenance_nginx'), '/etc/nginx/sites-available/maintenance', use_sudo=True)
+    put(template_path('maintenance_index.html'), '/usr/share/nginx/www/index.html', use_sudo=True)
 
 def setup_supervisor():
     site_root = join(home_directory(SITE_USER), 'site')
