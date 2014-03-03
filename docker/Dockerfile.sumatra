@@ -1,0 +1,12 @@
+FROM debian:wheezy
+MAINTAINER codersquid
+RUN apt-get update -y
+RUN apt-get install -y python-software-properties python-dev build-essential nginx libxslt1-dev supervisor git vim curl tmux htop ack-grep mercurial wget
+RUN cd /tmp
+RUN wget https://bitbucket.org/pypa/setuptools/raw/bootstrap/ez_setup.py
+RUN wget https://raw.github.com/pypa/pip/master/contrib/get-pip.py
+RUN python ez_setup.py 
+RUN python get-pip.py 
+RUN pip install virtualenvwrapper
+RUN pip install setproctitle
+RUN pip install -e hg+https://bitbucket.org/apdavison/sumatra#egg=sumatra

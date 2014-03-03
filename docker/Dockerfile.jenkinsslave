@@ -1,0 +1,7 @@
+FROM ubuntu:latest
+
+ENV DEBIAN_FRONTEND noninteractive
+
+RUN apt-get update -y
+RUN apt-get install -y python-software-properties python-dev build-essential git vim curl tmux htop ack-grep mercurial wget openjdk-7-jre openjdk-7-jdk
+RUN useradd -s/bin/bash -d/home/jenkins -m jenkins
