@@ -49,7 +49,7 @@ def staging():
         'carbon': '10.176.162.45',
         'site': 'labs.researchcompendia.org',
         'available': 'researchcompendia',
-        'hosts': ['labs.researchcompendia.org'],
+        'hosts': ['labs.researchcompendia.org:2222'],
         'site_environment': 'staging_environment.sh',
     })
 
@@ -60,7 +60,7 @@ def prod():
         'carbon': '10.176.162.45',
         'site': 'researchcompendia.org',
         'available': 'researchcompendia',
-        'hosts': ['researchcompendia.org'],
+        'hosts': ['researchcompendia.org:2222'],
         'site_environment': 'prod_environment.sh',
     })
 
@@ -96,20 +96,20 @@ def deploy(version_tag=None):
         provided_by=('dev', 'staging', 'prod', 'vagrant'))
 
     maintenance_enable()
-    supervisor.stop_process(SITE_NAME)
+    supervisor.stop_process('researchcompendia')
     supervisor.stop_process('celery')
 
     new_env = virtualenv_name(commit=version_tag)
     mkvirtualenv(new_env)
-    setup_site_root()
     update_site_version(new_env)
     update_repo(commit=version_tag)
     install_site_requirements(new_env)
     collectstatic()
 
-    supervisor.start_process(SITE_NAME)
+    supervisor.start_process('researchcompendia')
     supervisor.start_process('celery')
     maintenance_disable()
+
 
 
 @task
@@ -418,17 +418,25 @@ def collectstatic():
         vsu('source %s; ./manage.py collectstatic --noinput --clear --ignore *logs* --ignore *materials* --ignore *articles*' % environment)
 
 
+@task
 def maintenance_enable():
     """Take down the researchcompendia site and enable the maintenance site
     """
+    fabric.api.require('site', 'available', 'hosts', 'site_environment',
+        provided_by=('dev', 'staging', 'prod', 'vagrant'))
     require.nginx.disabled('researchcompendia')
     require.nginx.enabled('maintenance')
+    sudo('service nginx restart')
 
+@task
 def maintenance_disable():
     """Take down the maintenance site and enable the researchcompendia site
     """
+    fabric.api.require('site', 'available', 'hosts', 'site_environment',
+        provided_by=('dev', 'staging', 'prod', 'vagrant'))
     require.nginx.disable('maintenance')
     require.nginx.enable('researchcompendia')
+    sudo('service nginx restart')
 
 
 def get_site_version():
