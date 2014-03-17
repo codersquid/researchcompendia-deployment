@@ -104,12 +104,25 @@ def deploy(version_tag=None):
     update_site_version(new_env)
     update_repo(commit=version_tag)
     install_site_requirements(new_env)
-    collectstatic()
+    #collectstatic()
 
     supervisor.start_process('researchcompendia')
     supervisor.start_process('celery')
     maintenance_disable()
 
+
+@task
+def update(version_tag='develop'):
+    """only updates repo and restarts supervised process
+
+    version_tag: a git tag, defaults to develop
+    """
+    fabric.api.require('site', 'available', 'hosts', 'site_environment',
+        provided_by=('dev', 'staging', 'prod', 'vagrant'))
+
+    supervisor.stop_process('researchcompendia')
+    update_repo(commit=version_tag)
+    supervisor.start_process('researchcompendia')
 
 
 @task
