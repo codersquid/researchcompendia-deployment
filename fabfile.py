@@ -70,7 +70,7 @@ def vagrant():
     env.update({
         'carbon': '10.176.162.45',
         'user': 'vagrant',
-        'site': '127.0.0.1:2222',
+        'site': 'localhost',
         'available': 'researchcompendia',
         'hosts': ['127.0.0.1:2222'],
         'site_environment': 'dev_environment.sh',
