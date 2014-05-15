@@ -517,7 +517,7 @@ def virtualenv_name(commit=None):
         with cd(repodir):
             commit = run('git rev-parse HEAD').strip()
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-    return '%s-%s' % (timestamp, commit)
+    return '%s-%s' % (timestamp, commit.replace('/', '_'))
 
 
 def template_path(filename):
