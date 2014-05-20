@@ -215,23 +215,11 @@ def provision(version_tag=None, everything=False):
     setup_supervisor()
 
     if everything:
-        add_download_checker()
+        crontab_download_checker()
         setup_rabbitmq()
-        setup_collectd()
+        setup_elasticsearch()
+        crontab_update_index()
 
-    # statsite
-    #setup_statsite()
-
-    ## papertrail
-    #setup_papertrail()
-    # site/logs/papertrail.yml
-    # change rsyslog file
-    # restart rsyslog
-    # rvm install with ruby
-    # gem install remote_syslog
-    # wrap remote_syslog
-    # supervisor file
-    # restart supervisor
 
 
 def setup_collectd():
@@ -263,6 +251,13 @@ def setup_rabbitmq(user=None):
     sudo('rabbitmqctl set_permissions -p / %s ".*" ".*" ".*"' % user)
     amqp_url = 'amqp://%s:%s@localhost:5672//' % (SITE_USER, secret)
     sed(envfile, 'DJANGO_BROKER_URL=".*"', 'DJANGO_BROKER_URL="%s"' % amqp_url, use_sudo=True)
+
+
+def setup_elasticsearch():
+    deb.add_apt_key(url='http://packages.elasticsearch.org/GPG-KEY-elasticsearch')
+    require.deb.source('elasticsearch', 'http://packages.elasticsearch.org/elasticsearch/1.1/debian', 'stable', 'main')
+    require.deb.uptodate_index(max_age={'hour': 1})
+    require.deb.packages(['elasticsearch',])
 
 
 def setup_nginx():
@@ -407,7 +402,7 @@ def setup_site_root():
         su('chmod +x runserver.sh celeryworker.sh check_downloads.sh')
 
 
-def add_download_checker():
+def crontab_download_checker():
     site_root = join(home_directory(SITE_USER), 'site')
     bindir = join(site_root, 'bin')
     job = join(home_directory(SITE_USER), 'check_downloads')
@@ -421,12 +416,22 @@ def add_download_checker():
     su('crontab %s' % job)
 
 
-def update_dependencies():
-    require.deb.uptodate_index(max_age={'hour': 1})
-    install_dependencies()
+def crontab_update_index():
+    site_root = join(home_directory(SITE_USER), 'site')
+    bindir = join(site_root, 'bin')
+    job = join(home_directory(SITE_USER), 'update_index')
+    upload_template('update_index', job,
+        context={
+            'command': join(bindir, 'update_index.sh'),
+            'logfile': join(site_root, 'logs', 'cron_update_index.log'),
+        },
+        use_jinja=True, use_sudo=True, template_dir=TEMPLATE_DIR)
+    sudo('chown %s:%s %s' % (SITE_USER, SITE_USER, job))
+    su('crontab %s' % job)
 
 
 def install_dependencies():
+    require.deb.uptodate_index(max_age={'hour': 1})
     require.deb.packages([
         'python-software-properties',
         'python-dev',
