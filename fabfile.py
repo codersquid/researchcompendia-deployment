@@ -258,6 +258,7 @@ def setup_elasticsearch():
     require.deb.source('elasticsearch', 'http://packages.elasticsearch.org/elasticsearch/1.1/debian', 'stable', 'main')
     require.deb.uptodate_index(max_age={'hour': 1})
     require.deb.packages(['elasticsearch',])
+    sudo('update-rc.d elasticsearch defaults 95 10')
 
 
 def setup_nginx():
